@@ -16,17 +16,17 @@ CONTENT_XML_FILE_NAME = 'content.xml'
 OFFICE_NS = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
 TABLE_NS = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
 
-VALUE_TYPE_ATTRIBUTE = f'{OFFICE_NS}}}value-type'
-VALUE_ATTRIBUTE = f'{OFFICE_NS}}}value'
-STRING_VALUE_ATTRIBUTE = f'{OFFICE_NS}}}string-value'
+VALUE_TYPE_ATTRIBUTE = f'{OFFICE_NS}|value-type'
+VALUE_ATTRIBUTE = f'{OFFICE_NS}|value'
+STRING_VALUE_ATTRIBUTE = f'{OFFICE_NS}|string-value'
 
-TABLE_NAME_ATTRIBUTE = f'{TABLE_NS}}}name'
-TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE = f'{TABLE_NS}}}number-columns-repeated'
-TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE = f'{TABLE_NS}}}number-rows-repeated'
+TABLE_NAME_ATTRIBUTE = f'{TABLE_NS}|name'
+TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE = f'{TABLE_NS}|number-columns-repeated'
+TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE = f'{TABLE_NS}|number-rows-repeated'
 
-TABLE_TABLE_TAG = f'{TABLE_NS}}}table'
-TABLE_ROW_TAG = f'{TABLE_NS}}}table-row'
-TABLE_CELL_TAG = f'{TABLE_NS}}}table-cell'
+TABLE_TABLE_TAG = f'{TABLE_NS}|table'
+TABLE_ROW_TAG = f'{TABLE_NS}|table-row'
+TABLE_CELL_TAG = f'{TABLE_NS}|table-cell'
 
 READ_CHUNK_SIZE = 2**16
 
@@ -209,7 +209,7 @@ class ODSParser():
 
             collected_rows.clear()
 
-        parser = ParserCreate(namespace_separator='}')
+        parser = ParserCreate(namespace_separator='|')
         parser.buffer_text = True
         parser.StartElementHandler = start_element
         parser.EndElementHandler = end_element
