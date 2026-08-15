@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - New parsing algorithm based on `xml.parsers.expat`.
+- Breaking: the public entrypoint is now a free `parse(path, **kwargs)` function.
 
 ## [0.3.0]
 

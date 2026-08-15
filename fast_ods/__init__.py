@@ -1,3 +1,3 @@
-from .fast_ods import ODSParser, ODSParserOptions
+from .fast_ods import ODSParserOptions, parse
 
-__all__ = ["ODSParser", "ODSParserOptions"]
+__all__ = ["ODSParserOptions", "parse"]
