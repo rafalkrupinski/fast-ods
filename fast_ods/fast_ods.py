@@ -1,8 +1,8 @@
 from dataclasses import dataclass, replace
 from datetime import datetime
-from io import IOBase
 from logging import getLogger
-from typing import Iterator, NamedTuple
+from typing import IO, NamedTuple
+from collections.abc import Iterator
 from zipfile import ZipFile
 
 from xml.parsers.expat import ParserCreate
@@ -59,11 +59,11 @@ class RowInfo(NamedTuple):
     has_value: bool
 
 
-class ODSParser():
+class ODSParser:
     def __init__(self, default_options: ODSParserOptions | None = None):
         self.default_options = default_options or ODSParserOptions()
 
-    def _parse_table_internal(self, ods_contents: IOBase, options: ODSParserOptions) -> Iterator[tuple]:
+    def _parse_table_internal(self, ods_contents: IO[bytes], options: ODSParserOptions) -> Iterator[tuple]:
         if ods_contents is None:
             raise ValueError("'ods_contents' was null")
         
@@ -137,24 +137,26 @@ class ODSParser():
 
             # Handle </table:table-cell>
             if name == TABLE_CELL_TAG:
-                cell_value = cell_attrs.get(STRING_VALUE_ATTRIBUTE)
+                raw_value = cell_attrs.get(STRING_VALUE_ATTRIBUTE)
 
-                if cell_value is None:
-                    cell_value = cell_attrs.get(VALUE_ATTRIBUTE)
+                if raw_value is None:
+                    raw_value = cell_attrs.get(VALUE_ATTRIBUTE)
 
-                if cell_value is None and cell_chars:
-                    cell_value = "".join(cell_chars)
+                if raw_value is None and cell_chars:
+                    raw_value = "".join(cell_chars)
+
+                cell_value: str | float | datetime | None = raw_value
 
                 # Convert the cell value to the type specified in the cell 'value-type' attribute
-                if cell_value is not None and convert_values:
+                if raw_value is not None and convert_values:
                     value_type_attribute = cell_attrs.get(VALUE_TYPE_ATTRIBUTE)
 
                     if value_type_attribute in ("float", "currency", "percentage"):
-                        cell_value = float(cell_value)
+                        cell_value = float(raw_value)
                     elif value_type_attribute == "date":
-                        cell_value = datetime.fromisoformat(cell_value)
-                    elif cell_value is not None:
-                        cell_value = str(cell_value)
+                        cell_value = datetime.fromisoformat(raw_value)
+                    else:
+                        cell_value = str(raw_value)
 
                 if cell_value is not None:
                     current_row_has_value = True
@@ -227,7 +229,7 @@ class ODSParser():
                 break
 
     def _merge_options(self, overrides: dict) -> ODSParserOptions:
-        return replace(self.default_options, **overrides) if not overrides is None else self.default_options
+        return replace(self.default_options, **overrides) if overrides is not None else self.default_options
 
     def parse(self, path: str, **options) -> Iterator[tuple]:
         merged_options = self._merge_options(options)
