@@ -18,6 +18,9 @@ Designed for efficiency, performance and low memory usage, making it an ideal ch
 
 ## Changelog
 
+Unreleased:
+- New parsing algorithm based on `xml.parsers.expat`.
+
 v0.3.0 release:
 - New parsing algorithm, with an approximate 3x increase in performance on tests*
 - Fixed the skip/take N rows logic, aligning it to user expectations and to better reflect how rows are displayed in spreadsheet software

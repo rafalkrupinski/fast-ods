@@ -2,10 +2,10 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from io import IOBase
 from logging import getLogger
-from typing import Iterator
+from typing import Iterator, NamedTuple
 from zipfile import ZipFile
 
-import xml.etree.ElementTree as ET
+from xml.parsers.expat import ParserCreate
 
 # -----------------
 # Constants
@@ -15,36 +15,20 @@ CONTENT_XML_FILE_NAME = 'content.xml'
 
 OFFICE_NS = 'urn:oasis:names:tc:opendocument:xmlns:office:1.0'
 TABLE_NS = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0'
-TEXT_NS = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0'
 
-NAMESPACE_DICT = {
-    'office': OFFICE_NS,
-    'table': TABLE_NS,
-    'text': TEXT_NS
-}
+VALUE_TYPE_ATTRIBUTE = f'{OFFICE_NS}}}value-type'
+VALUE_ATTRIBUTE = f'{OFFICE_NS}}}value'
+STRING_VALUE_ATTRIBUTE = f'{OFFICE_NS}}}string-value'
 
-VALUE_TYPE_ATTRIBUTE = f'{{{OFFICE_NS}}}value-type'
-VALUE_ATTRIBUTE = f'{{{OFFICE_NS}}}value'
-STRING_VALUE_ATTRIBUTE = f'{{{OFFICE_NS}}}string-value'
+TABLE_NAME_ATTRIBUTE = f'{TABLE_NS}}}name'
+TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE = f'{TABLE_NS}}}number-columns-repeated'
+TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE = f'{TABLE_NS}}}number-rows-repeated'
 
-TABLE_NAME_ATTRIBUTE = f'{{{TABLE_NS}}}name'
-TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE = f'{{{TABLE_NS}}}number-columns-repeated'
-TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE = f'{{{TABLE_NS}}}number-rows-repeated'
+TABLE_TABLE_TAG = f'{TABLE_NS}}}table'
+TABLE_ROW_TAG = f'{TABLE_NS}}}table-row'
+TABLE_CELL_TAG = f'{TABLE_NS}}}table-cell'
 
-TABLE_TABLE_TAG = f'{{{TABLE_NS}}}table'
-TABLE_COLUMN_TAG = f'{{{TABLE_NS}}}table-column'
-TABLE_ROW_TAG = f'{{{TABLE_NS}}}table-row'
-TABLE_CELL_TAG = f'{{{TABLE_NS}}}table-cell'
-TEXT_P_TAG = f'{{{TEXT_NS}}}p'
-
-PARSED_ELEMENTS = {
-    TABLE_TABLE_TAG,
-    TABLE_CELL_TAG,
-    TABLE_ROW_TAG,
-}
-
-TAG_START_EVENT = 'start'
-TAG_END_EVENT = 'end'
+READ_CHUNK_SIZE = 2**16
 
 logger = getLogger(__name__)
 
@@ -64,6 +48,16 @@ class ODSParserOptions:
 #------------------
 # Parser
 #------------------
+
+
+CellValue = str | float | datetime | None
+
+
+class RowInfo(NamedTuple):
+    values: tuple[CellValue, ...]
+    repeat: int
+    has_value: bool
+
 
 class ODSParser():
     def __init__(self, default_options: ODSParserOptions | None = None):
@@ -91,101 +85,69 @@ class ODSParser():
         seen_target_table = False
         number_of_tables_checked = 0
 
+        # Attributes of the row/cell currently being parsed
+        row_attrs: dict[str, str] = {}
+        cell_attrs: dict[str, str] = {}
+        in_cell = False
+        cell_chars: list[str] = []
+
+        # Value accumulator for the current row
+        current_row: list[CellValue] = []
+        current_row_has_value = False
+
         # Row counting for the take/skip N rows functionality
         row_count = 0
         rows_taken = 0
 
-        # Value accumulator for the current row
-        current_row = []
-        current_row_has_value = False
+        # rows completed since the last drain
+        collected_rows: list[RowInfo] = []
 
-        for event, element in ET.iterparse(ods_contents, events=[TAG_START_EVENT, TAG_END_EVENT]):
-            # Cached element properties
-            iter_element = iter(element)
-            child = next(iter_element, None)
-            second = next(iter_element, None)
+        def start_element(name: str, attrs: dict[str, str]):
+            nonlocal seen_target_table, number_of_tables_checked, row_attrs, cell_attrs, in_cell, cell_chars
 
-            tag_name = element.tag
-            attrib_get_func = element.attrib.get
+            if not seen_target_table and name == TABLE_TABLE_TAG:
+                table_name = attrs.get(TABLE_NAME_ATTRIBUTE)
 
-            # Check if the current table element matches the name or index provided
-            if (not seen_target_table) and tag_name == TABLE_TABLE_TAG and event == TAG_START_EVENT:
-                table_name = attrib_get_func(TABLE_NAME_ATTRIBUTE)
-                
                 if (isinstance(table, str) and table == table_name) or (isinstance(table, int) and table == number_of_tables_checked):
                     seen_target_table = True
-                    continue
-
-                number_of_tables_checked += 1
-                element.clear()
-
-            # Ignore element start events once the table is located
-            if event == TAG_START_EVENT or tag_name not in PARSED_ELEMENTS:
-                continue
-
-            # Handle </table:table-row> tag
-            if tag_name == TABLE_ROW_TAG:
-                row_repeat_amount = int(attrib_get_func(TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE, 1))
-                
-                for _ in range(row_repeat_amount):
-                    # Increment row count by 1
-                    row_count += 1
-
-                    # Skip the requested amount of rows
-                    if skip_n_rows and row_count <= skip_n_rows:
-                        continue
-
-                    # Skip the row if it's empty and the "skip_empty_rows_at_start" option is True
-                    if (not current_row_has_value) and skip_empty_rows_at_start:
-                        continue
-
-                    # Clear the "skip_empty_rows_at_start" option when the first row with data is found
-                    skip_empty_rows_at_start = False
-
-                    yield tuple(current_row)
-
-                    rows_taken += 1
-
-                    # Stop iteration if the targeted number of rows have already been returned
-                    if take_n_rows and rows_taken >= take_n_rows:
-                        return
-
-                current_row_has_value = False
-                current_row = []
-
-                element.clear()
-
-            # Handle </table:table-cell> tag
-            if tag_name == TABLE_CELL_TAG:
-                cell_value = None
-
-                string_value_attribute = attrib_get_func(STRING_VALUE_ATTRIBUTE)
-
-                # Try finding the cell value through its' elements
-                if string_value_attribute is not None:
-                    cell_value = string_value_attribute
                 else:
-                    value_attribute = attrib_get_func(VALUE_ATTRIBUTE)
+                    number_of_tables_checked += 1
 
-                    if value_attribute is not None:
-                        cell_value = value_attribute
+                return
 
-                if cell_value is None and child is not None:
-                    # Exactly one child
-                    if second is None:
-                        if child.text and len(child) == 0:
-                            # The text property of the child is defined and there are no elements in 
-                            cell_value = child.text
-                        else:
-                            # The child element has no direct text node, but it contains children (which might have text)
-                            cell_value = "".join(child.itertext())
-                    else:
-                        # Multiple children
-                        cell_value = "".join(child.itertext())
+            if not seen_target_table:
+                return
+
+            if name == TABLE_ROW_TAG:
+                row_attrs = attrs
+            elif name == TABLE_CELL_TAG:
+                in_cell = True
+                cell_chars = []
+                cell_attrs = attrs
+
+        def char_data(data: str):
+            if in_cell:
+                cell_chars.append(data)
+
+        def end_element(name: str):
+            nonlocal in_cell, cell_chars, current_row, current_row_has_value
+
+            if not seen_target_table:
+                return
+
+            # Handle </table:table-cell>
+            if name == TABLE_CELL_TAG:
+                cell_value = cell_attrs.get(STRING_VALUE_ATTRIBUTE)
+
+                if cell_value is None:
+                    cell_value = cell_attrs.get(VALUE_ATTRIBUTE)
+
+                if cell_value is None and cell_chars:
+                    cell_value = "".join(cell_chars)
 
                 # Convert the cell value to the type specified in the cell 'value-type' attribute
                 if cell_value is not None and convert_values:
-                    value_type_attribute = attrib_get_func(VALUE_TYPE_ATTRIBUTE)
+                    value_type_attribute = cell_attrs.get(VALUE_TYPE_ATTRIBUTE)
 
                     if value_type_attribute in ("float", "currency", "percentage"):
                         cell_value = float(cell_value)
@@ -198,18 +160,71 @@ class ODSParser():
                     current_row_has_value = True
 
                 # Append cell values to the current row
-                column_repeat_amount = int(attrib_get_func(TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE, 1))
+                column_repeat_amount = int(cell_attrs.get(TABLE_NUMBER_COLUMNS_REPEATED_ATTRIBUTE, 1))
 
                 if column_repeat_amount == 1:
                     current_row.append(cell_value)
                 else:
                     current_row.extend([cell_value] * column_repeat_amount)
 
-                # Clear cell tag after extracting the text value
-                element.clear()
-            
-            if tag_name != TEXT_P_TAG:
-                element.clear()
+                in_cell = False
+                cell_chars = []
+                return
+
+            # Handle </table:table-row>
+            if name == TABLE_ROW_TAG:
+                row_repeat_amount = int(row_attrs.get(TABLE_NUMBER_ROWS_REPEATED_ATTRIBUTE, 1))
+
+                collected_rows.append(RowInfo(tuple(current_row), row_repeat_amount, current_row_has_value))
+
+                current_row = []
+                current_row_has_value = False
+
+        def drain():
+            nonlocal row_count, rows_taken, skip_empty_rows_at_start
+
+            for row in collected_rows:
+                for _ in range(row.repeat):
+                    # Increment row count by 1
+                    row_count += 1
+
+                    # Skip the requested amount of rows
+                    if skip_n_rows and row_count <= skip_n_rows:
+                        continue
+
+                    # Skip the row if it's empty and the "skip_empty_rows_at_start" option is True
+                    if (not row.has_value) and skip_empty_rows_at_start:
+                        continue
+
+                    # Clear the "skip_empty_rows_at_start" option when the first row with data is found
+                    skip_empty_rows_at_start = False
+
+                    yield row.values
+
+                    rows_taken += 1
+
+                    # Stop iteration if the targeted number of rows have already been returned
+                    if take_n_rows and rows_taken >= take_n_rows:
+                        return
+
+            collected_rows.clear()
+
+        parser = ParserCreate(namespace_separator='}')
+        parser.buffer_text = True
+        parser.StartElementHandler = start_element
+        parser.EndElementHandler = end_element
+        parser.CharacterDataHandler = char_data
+
+        while True:
+            chunk = ods_contents.read(READ_CHUNK_SIZE)
+            is_final = not chunk
+
+            parser.Parse(chunk, is_final)
+
+            yield from drain()
+
+            if is_final or (take_n_rows and rows_taken >= take_n_rows):
+                break
 
     def _merge_options(self, overrides: dict) -> ODSParserOptions:
         return replace(self.default_options, **overrides) if not overrides is None else self.default_options
